@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PickerSpin embed: read the result</title>
+</head>
+<body>
+<h1>Dinner tonight</h1>
+
+<iframe id="wheel"
+  src="https://pickerspin.co/embed/wheel/?entries=Pizza,Curry,Tacos,Sushi,Pasta&title=Dinner"
+  width="100%" height="520"
+  style="border:0;border-radius:12px;max-width:420px"
+  loading="lazy" title="PickerSpin wheel"></iframe>
+<p>Wheel by <a href="https://pickerspin.co/">PickerSpin</a></p>
+
+<p>History:</p>
+<ol id="history"></ol>
+
+<script>
+  // The wheel posts a message to this page after every spin, and again when
+  // its height changes. Check the origin before trusting either.
+  window.addEventListener('message', function (e) {
+    if (e.origin !== 'https://pickerspin.co') return;
+    var data = e.data || {};
+    if (data.type === 'pickerspin:result') {
+      var li = document.createElement('li');
+      li.textContent = data.winner;
+      document.getElementById('history').appendChild(li);
+    }
+    if (data.type === 'pickerspin:height') {
+      document.getElementById('wheel').style.height = data.height + 'px';
+    }
+  });
+</script>
+</body>
+</html>

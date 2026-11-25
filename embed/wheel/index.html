@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,follow">
+<title>PickerSpin Wheel</title>
+<!--
+  Standalone embeddable wheel.
+
+  Deliberately not the React app. The old embed pointed an iframe at
+  "/?embed=true", which loaded the entire site — router, navbar, footer, every
+  content section — inside someone else's page. This file is self-contained
+  vanilla JS and ships nothing it does not draw.
+
+  Params: ?entries=A,B,C  &title=Pick+one  &theme=light|dark|auto  &color=hex
+          &duration=seconds (2-20)  &remove=1 (take each winner off the wheel)
+  Emits window.postMessage({type:'pickerspin:result', winner, index}) to the host.
+
+  Stream overlay: &obs=1 is for an OBS (or Streamlabs) browser source, built
+  by /spin-the-wheel-for-twitch/. The background is transparent, the wheel
+  fills the source, the result shows as a large banner and the wheel ticks
+  as it turns. There is no button: click the wheel or press Space in the
+  source's Interact window. &button=1 brings the button back, &sound=0 mutes.
+-->
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    display:flex;align-items:center;justify-content:center;
+    background:var(--bg);color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+  :root{--bg:#fff;--ink:#1a1a2e;--muted:#4a4a68;--line:#e0e4e0;--brand:#2e7d32;--on-brand:#fff}
+  :root[data-theme=dark]{--bg:#121218;--ink:#e8e8f0;--muted:#b0b0c8;--line:#2e2e44;--brand:#2e7d32;--on-brand:#fff}
+  .wrap{width:100%;max-width:420px;padding:12px;display:flex;flex-direction:column;align-items:center;gap:10px}
+  h1{font-size:1rem;font-weight:600;margin:0;text-align:center;color:var(--ink);overflow-wrap:anywhere}
+  .stage{position:relative;width:100%;aspect-ratio:1;max-width:320px}
+  .stage svg{position:absolute;inset:0;width:100%;height:100%}
+  #face{will-change:transform}
+  #result{
+    margin:0;font-size:1rem;font-weight:600;text-align:center;min-height:1.4em;
+    color:var(--ink);overflow-wrap:anywhere
+  }
+  button{
+    font:inherit;font-weight:600;font-size:1rem;
+    background:var(--brand);color:var(--on-brand);border:0;border-radius:8px;
+    padding:12px 28px;cursor:pointer;min-height:44px;width:100%;max-width:320px;
+  }
+  button:disabled{opacity:.6;cursor:default}
+  button:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  a.credit{font-size:.75rem;color:var(--muted);text-decoration:none}
+  a.credit:hover{text-decoration:underline}
+  @media (prefers-reduced-motion:reduce){#face{transition:none}}
+
+  /* Stream overlay (&obs=1). Sized from the browser source, not a page. */
+  :root.obs{--bg:transparent}
+  .obs .wrap{max-width:none;height:100vh;justify-content:center;padding:2vmin}
+  .obs .stage{max-width:none;width:min(94vw,72vh);cursor:pointer}
+  .obs h1{font-size:clamp(1.2rem,5vmin,3rem);font-weight:800;color:#fff;
+    text-shadow:0 2px 6px rgba(0,0,0,.75)}
+  .obs #result{
+    font-size:clamp(1.4rem,7vmin,4.5rem);font-weight:800;line-height:1.15;
+    color:#fff;background:rgba(10,10,20,.82);border-radius:.4em;
+    padding:.2em .6em;min-height:0;max-width:94vw
+  }
+  .obs #result:empty{visibility:hidden}
+  .obs #result.pop{animation:pop .45s cubic-bezier(.2,1.4,.4,1)}
+  .obs a.credit{color:#fff;opacity:.7;font-size:clamp(.7rem,1.8vmin,1rem);
+    text-shadow:0 1px 3px rgba(0,0,0,.8);pointer-events:none}
+  @keyframes pop{from{transform:scale(.6);opacity:0}to{transform:scale(1);opacity:1}}
+  @media (prefers-reduced-motion:reduce){.obs #result.pop{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title" hidden></h1>
+  <div class="stage">
+    <svg id="face" viewBox="0 0 300 300" aria-hidden="true"></svg>
+    <svg viewBox="0 0 300 300" aria-hidden="true">
+      <path d="M137 4 L163 4 L150 24 Z" fill="#D32F2F" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"/>
+      <circle cx="150" cy="150" r="17" fill="#fff"/>
+      <circle cx="150" cy="150" r="10.6" fill="#2f9e4f"/>
+    </svg>
+  </div>
+  <p id="result" role="status" aria-live="polite"></p>
+  <button id="spin" type="button">Spin</button>
+  <a class="credit" id="credit" href="https://pickerspin.co/" target="_blank" rel="noopener">Powered by PickerSpin</a>
+</div>
+<script>
+  /* wheel-labels:begin (generated from src/components/wheelLabels.js; do not edit) */
+  var PSLabels = (function () {
+function uRegExp(source, flags, fallback) {
+  try {
+    return new RegExp(source, `${flags || ''}u`);
+  } catch (_) {
+    return fallback;
+  }
+}
+const PICTO = uRegExp('\\p{Extended_Pictographic}', '', /[\uD83C-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF]/);
+const WORDISH = uRegExp('[\\p{L}\\p{N}]', '', /[A-Za-z0-9\u00C0-\uFFFF]/);
+
+const LABEL_FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+const LABEL_WEIGHT = 700;
+const GEOMETRY = {
+  radius: 142,
+  rimInset: 18,
+  hubClearance: 142 * 0.12 + 7, // hub radius plus breathing room
+};
+const MIN_SIZE = 7.5;
+function maxSizeFor(n) {
+  if (n <= 4) return 17;
+  if (n <= 6) return 15.5;
+  if (n <= 10) return 14;
+  if (n <= 16) return 12.5;
+  if (n <= 24) return 11;
+  if (n <= 40) return 9.5;
+  return 8.5;
+}
+
+const LINE_HEIGHT = 1.12; // em, between the two lines of a wrapped label
+const BLOCK_PAD = 1.15; // em of slice height one line needs, glyphs plus air
+function graphemes(text) {
+  if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+    return Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), (s) => s.segment);
+  }
+  return Array.from(text);
+}
+function truncate(text, maxEm, measure) {
+  const chars = graphemes(text);
+  const ell = '…';
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (measure(chars.slice(0, mid).join('').trimEnd() + ell) <= maxEm) lo = mid; else hi = mid - 1;
+  }
+  if (lo === 0) return null;
+  let cut = chars.slice(0, lo).join('');
+  const space = cut.lastIndexOf(' ');
+  if (space > 0 && lo < chars.length) cut = cut.slice(0, space);
+  cut = cut.replace(/[\s,.;:!?-]+$/u, '');
+  return cut ? cut + ell : null;
+}
+function splitLines(words, k, measure) {
+  if (words.length < k) return null;
+  const n = words.length;
+  const width = (i, j) => measure(words.slice(i, j).join(' '));
+  const best = Array.from({ length: n + 1 }, () => new Array(k + 1).fill(Infinity));
+  const from = Array.from({ length: n + 1 }, () => new Array(k + 1).fill(-1));
+  best[0][0] = 0;
+  for (let m = 1; m <= k; m += 1) {
+    for (let j = m; j <= n; j += 1) {
+      for (let i = m - 1; i < j; i += 1) {
+        const w = Math.max(best[i][m - 1], width(i, j));
+        if (w < best[j][m]) { best[j][m] = w; from[j][m] = i; }
+      }
+    }
+  }
+  const lines = [];
+  for (let j = n, m = k; m > 0; m -= 1) {
+    const i = from[j][m];
+    lines.unshift(words.slice(i, j).join(' '));
+    j = i;
+  }
+  return { lines, width: best[n][k] };
+}
+function fillAndCut(label, k, maxEm, measure) {
+  const words = label.split(' ');
+  const lines = [];
+  let i = 0;
+  while (lines.length < k - 1 && i < words.length) {
+    let line = words[i];
+    if (measure(line) > maxEm) break; // one word wider than a line: cut instead
+    i += 1;
+    while (i < words.length && measure(`${line} ${words[i]}`) <= maxEm) { line += ` ${words[i]}`; i += 1; }
+    lines.push(line);
+  }
+  const rest = words.slice(i).join(' ');
+  if (rest) {
+    const cut = measure(rest) <= maxEm ? rest : truncate(rest, maxEm, measure);
+    if (cut) lines.push(cut);
+  }
+  return lines.length ? lines : null;
+}
+function wordsOf(label) {
+  const raw = label.split(' ');
+  const out = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const glue = !WORDISH.test(raw[i]);
+    if (glue && i < raw.length - 1) { raw[i + 1] = `${raw[i]} ${raw[i + 1]}`; continue; }
+    if (glue && out.length) { out[out.length - 1] += ` ${raw[i]}`; continue; }
+    out.push(raw[i]);
+  }
+  return out;
+}
+const maxLinesFor = (sweep) => (sweep >= 55 ? 3 : sweep >= 30 ? 2 : 1);
+function layoutLabel(text, sweep, n, measure, options = {}) {
+  const geometry = options.geometry || GEOMETRY;
+  const label = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!label) return null;
+
+  const rOuter = geometry.radius - geometry.rimInset;
+  const maxLen = rOuter - geometry.hubClearance;
+  const s = Math.sin((Math.min(sweep, 180) * Math.PI) / 360);
+  const ceiling = Math.max(MIN_SIZE, Math.min(maxSizeFor(n), options.ceiling || Infinity));
+  const step = 0.25;
+  const room = (f, lines) => {
+    const blockHeight = f * (BLOCK_PAD + (lines - 1) * LINE_HEIGHT);
+    return Math.min(maxLen, rOuter - blockHeight / (2 * s));
+  };
+  const largestFit = (widthEm, lines) => {
+    for (let f = ceiling; f >= MIN_SIZE; f -= step) {
+      if (widthEm * f <= room(f, lines)) return f;
+    }
+    return null;
+  };
+  const words = wordsOf(label);
+  const maxLines = Math.min(maxLinesFor(sweep), words.length);
+  let best = null;
+  for (let k = 1; k <= maxLines; k += 1) {
+    const split = k === 1 ? { lines: [label], width: measure(label) } : splitLines(words, k, measure);
+    const f = split && largestFit(split.width, k);
+    if (f && (!best || f >= best.fontSize * 1.15)) best = { lines: split.lines, fontSize: f, cut: false };
+  }
+  if (best) return best;
+  const k = maxLines;
+  let f = Math.min(ceiling, Math.max(MIN_SIZE, 10));
+  while (f > MIN_SIZE && room(f, k) < maxLen * 0.7) f -= step;
+  f = Math.max(MIN_SIZE, f);
+  const avail = room(f, k);
+  if (avail < f * 1.6) return null; // not even a couple of characters
+  const lines = k > 1 ? fillAndCut(label, k, avail / f, measure) : [truncate(label, avail / f, measure)].filter(Boolean);
+  return lines && lines.length ? { lines, fontSize: f, cut: true } : null;
+}
+function layoutLabels(texts, sweeps, measure) {
+  const n = texts.length;
+  const first = texts.map((t, i) => layoutLabel(t, sweeps[i], n, measure));
+  const whole = first.filter((l) => l && !l.cut).map((l) => l.fontSize);
+  if (!whole.length) return first;
+  const cap = Math.min(...whole) * 1.35;
+  return first.map((l, i) => (l && l.fontSize > cap ? layoutLabel(texts[i], sweeps[i], n, measure, { ceiling: cap }) : l));
+}
+const INK = '#1a1a1a';
+function luminance(hex) {
+  const ch = (i) => {
+    const v = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * ch(1) + 0.7152 * ch(3) + 0.0722 * ch(5);
+}
+const ratio = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+function contrastColor(hex) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex || '')) return '#ffffff';
+  const l = luminance(hex);
+  return ratio(l, luminance(INK)) >= ratio(l, 1) ? INK : '#ffffff';
+}
+const LEADING_EMOJI = uRegExp(
+  '^((?:\\p{Extended_Pictographic}|\\p{Regional_Indicator})(?:\\p{Extended_Pictographic}|\\p{Emoji_Modifier}|\\p{Regional_Indicator}|\\u200D|\\uFE0F)*)\\s*',
+  '',
+  /^((?:[\uD83C-\uDBFF][\uDC00-\uDFFF]|[☀-➿])(?:[\uD83C-\uDBFF][\uDC00-\uDFFF]|‍|️)*)\s*/
+);
+function placeLabel(fit, center, measure, geometry = GEOMETRY) {
+  const C = 150;
+  const f = fit.fontSize;
+  const k = fit.lines.length;
+  const flip = center > 180;
+  const angle = flip ? center + 90 : center - 90;
+  const anchor = flip ? 'start' : 'end';
+  const rr = geometry.radius - geometry.rimInset;
+  const x = flip ? C - rr : C + rr;
+  const cos = Math.cos((angle * Math.PI) / 180);
+  const sin = Math.sin((angle * Math.PI) / 180);
+  const lines = [];
+  const emoji = [];
+  fit.lines.forEach((line, j) => {
+    const y = C + (j - (k - 1) / 2) * 1.12 * f;
+    const m = line.match(LEADING_EMOJI);
+    if (!m) { lines.push({ text: line, x, y }); return; }
+    const rest = line.slice(m[0].length);
+    const wE = measure(m[1]) * f * 0.85 * (Math.abs(cos) + Math.abs(sin));
+    const wRest = rest ? measure(rest) * f : 0;
+    const gap = rest ? 0.25 * f : 0;
+    const ex = flip ? C - rr + wE / 2 : C + rr - wRest - gap - wE / 2;
+    emoji.push({
+      text: m[1],
+      x: C + (ex - C) * cos - (y - C) * sin,
+      y: C + (ex - C) * sin + (y - C) * cos,
+    });
+    if (rest) lines.push({ text: rest, x: flip ? C - rr + wE + gap : x, y });
+  });
+  return { angle, anchor, fontSize: f, lines, emoji };
+}
+const MEASURE_PX = 13;
+const MEASURE_MARGIN = 1.05;
+const cache = new Map();
+let ctx;
+function context() {
+  if (ctx !== undefined) return ctx;
+  ctx = null;
+  try {
+    const jsdom = typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent || '');
+    if (!jsdom && typeof document !== 'undefined') {
+      ctx = document.createElement('canvas').getContext('2d');
+      if (ctx) ctx.font = `${LABEL_WEIGHT} ${MEASURE_PX}px ${LABEL_FONT}`;
+    }
+  } catch (_) {
+    ctx = null;
+  }
+  return ctx;
+}
+function estimateEm(text) {
+  let em = 0;
+  for (const ch of graphemes(text)) {
+    if (PICTO.test(ch)) em += 1.2;
+    else if (/[MWmw@%]/.test(ch)) em += 0.88;
+    else if (/[A-Z0-9#&]/.test(ch)) em += 0.68;
+    else if (/[ilj.,:;'!|]/.test(ch)) em += 0.3;
+    else if (ch === ' ') em += 0.28;
+    else em += 0.57;
+  }
+  return em;
+}
+
+function measureEm(text) {
+  let em = cache.get(text);
+  if (em !== undefined) return em;
+  const c = context();
+  em = (c ? c.measureText(text).width / MEASURE_PX : estimateEm(text)) * MEASURE_MARGIN;
+  if (cache.size > 2000) cache.clear();
+  cache.set(text, em);
+  return em;
+}
+
+  return { layoutLabels, placeLabel, contrastColor, measureEm, LABEL_FONT, LABEL_WEIGHT, GEOMETRY };
+  })();
+  /* wheel-labels:end */
+(function(){
+  'use strict';
+  var SVGNS='http://www.w3.org/2000/svg';
+  var JEWEL=['#EF5350','#AB47BC','#5C6BC0','#29B6F6','#26A69A','#66BB6A',
+             '#D4E157','#FFCA28','#FFA726','#8D6E63','#78909C','#EC407A'];
+  var C=150,R=142;
+  var q=new URLSearchParams(location.search);
+  var obs=q.get('obs')==='1';
+  if(obs) document.documentElement.classList.add('obs');
+  var removeWinners=q.get('remove')==='1';
+  var durationSec=parseFloat(q.get('duration'));
+  var DURATION=(durationSec>=2&&durationSec<=20)?durationSec*1000:(obs?6000:4200);
+
+  // Theme: explicit wins, otherwise follow the host visitor's OS setting.
+  var theme=q.get('theme')||'auto';
+  function applyTheme(){
+    var dark = theme==='dark' || (theme==='auto' &&
+      window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.setAttribute('data-theme', dark?'dark':'light');
+  }
+  applyTheme();
+  if(theme==='auto' && window.matchMedia){
+    var mq=window.matchMedia('(prefers-color-scheme: dark)');
+    (mq.addEventListener?mq.addEventListener.bind(mq,'change'):mq.addListener.bind(mq))(applyTheme);
+  }
+
+  var brand=q.get('color');
+  if(brand && /^#?[0-9a-fA-F]{6}$/.test(brand)){
+    document.documentElement.style.setProperty('--brand', brand[0]==='#'?brand:'#'+brand);
+  }
+
+  var entries=(q.get('entries')||'Yes,No,Yes,No,Yes,No')
+    .split(',').map(function(s){return s.trim();})
+    .filter(Boolean).slice(0,60);
+  if(entries.length<2) entries=['Yes','No'];
+
+  var titleText=q.get('title');
+  if(titleText){ var h=document.getElementById('title'); h.textContent=titleText; h.hidden=false; }
+
+  function polar(r,deg){var a=(deg-90)*Math.PI/180;return [C+r*Math.cos(a),C+r*Math.sin(a)];}
+
+  var face=document.getElementById('face');
+  var n, sweep;
+  function el(tag, attrs, text){
+    var e=document.createElementNS(SVGNS,tag);
+    for(var k in attrs) e.setAttribute(k, attrs[k]);
+    if(text!=null) e.textContent=text;
+    return e;
+  }
+
+  // Labels follow the site's wheel exactly (PSLabels, inlined above): sized to
+  // each slice, wrapped or cut at a word, upright, never into the hub, with
+  // whichever of ink or white contrasts more. Redrawn when &remove=1 takes a
+  // winner off.
+  function draw(){
+  n=entries.length; sweep=360/n;
+  while(face.firstChild) face.removeChild(face.firstChild);
+  var sweeps=[]; for(var s=0;s<n;s++) sweeps.push(sweep);
+  var fits=PSLabels.layoutLabels(entries, sweeps, PSLabels.measureEm);
+  for(var i=0;i<n;i++){
+    var fill=JEWEL[i%JEWEL.length];
+    var p0=polar(R,i*sweep), p1=polar(R,(i+1)*sweep);
+    face.appendChild(el('path',{
+      d:'M'+C+','+C+' L'+p0[0].toFixed(2)+','+p0[1].toFixed(2)+
+        ' A'+R+','+R+' 0 '+(sweep>180?1:0)+' 1 '+p1[0].toFixed(2)+','+p1[1].toFixed(2)+' Z',
+      fill:fill, stroke:'#ffffff', 'stroke-width':'1.6'
+    }));
+    if(!fits[i]) continue;
+    var pl=PSLabels.placeLabel(fits[i], (i+0.5)*sweep, PSLabels.measureEm);
+    var g=el('g',{fill:PSLabels.contrastColor(fill),'font-size':pl.fontSize,
+      'font-weight':PSLabels.LABEL_WEIGHT,'font-family':PSLabels.LABEL_FONT});
+    var rot=el('g',{transform:'rotate('+pl.angle+' '+C+' '+C+')'});
+    pl.lines.forEach(function(ln){ rot.appendChild(el('text',{x:ln.x,y:ln.y,dy:'0.35em','text-anchor':pl.anchor},ln.text)); });
+    g.appendChild(rot);
+    pl.emoji.forEach(function(em){ g.appendChild(el('text',{x:em.x.toFixed(2),y:em.y.toFixed(2),dy:'0.35em','text-anchor':'middle'},em.text)); });
+    face.appendChild(g);
+  }
+  }
+  draw();
+
+  // Same easing curve as the app so the embed decelerates identically.
+  function bezier(x1,y1,x2,y2){
+    var cx=3*x1,bx=3*(x2-x1)-cx,ax=1-cx-bx,cy=3*y1,by=3*(y2-y1)-cy,ay=1-cy-by;
+    function sx(t){return ((ax*t+bx)*t+cx)*t;} function sy(t){return ((ay*t+by)*t+cy)*t;}
+    function dx(t){return (3*ax*t+2*bx)*t+cx;}
+    return function(x){
+      if(x<=0)return 0; if(x>=1)return 1;
+      var t=x;
+      for(var i=0;i<8;i++){var e=sx(t)-x; if(Math.abs(e)<1e-4)return sy(t);
+        var d=dx(t); if(Math.abs(d)<1e-6)break; t-=e/d;}
+      return sy(t);
+    };
+  }
+  var EASE=bezier(0.12,0.82,0.18,1);
+  var norm=function(d){return ((d%360)+360)%360;};
+
+  var rot=0, spinning=false, lastWinner=-1;
+  var btn=document.getElementById('spin'), out=document.getElementById('result');
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Overlay ticks: one short click per slice edge passing the pointer, as on
+  // the site's wheel. OBS lets a browser source play audio without a gesture,
+  // and the stream picks it up from the source.
+  var audio=null;
+  function tick(){
+    try{
+      audio=audio||new (window.AudioContext||window.webkitAudioContext)();
+      var t=audio.currentTime, o=audio.createOscillator(), g=audio.createGain();
+      o.type='triangle'; o.frequency.value=1400;
+      g.gain.setValueAtTime(0.25,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.04);
+      o.connect(g); g.connect(audio.destination); o.start(t); o.stop(t+0.05);
+    }catch(e){}
+  }
+  var sound=obs && q.get('sound')!=='0';
+
+  if(obs && q.get('button')!=='1') btn.hidden=true;
+  if(obs){
+    document.querySelector('.stage').addEventListener('click', spin);
+    document.addEventListener('keydown', function(e){
+      if(e.code==='Space'||e.key==='Enter'){ e.preventDefault(); spin(); }
+    });
+    var credit=document.getElementById('credit');
+    credit.textContent='pickerspin.co'; credit.removeAttribute('href'); credit.tabIndex=-1;
+  }
+
+  btn.addEventListener('click', spin);
+  function spin(){
+    if(spinning) return;
+    if(removeWinners && lastWinner>=0 && entries.length>2){
+      // Take the previous winner off now, at the start of the next spin, so
+      // the result stays readable on the wheel until then.
+      entries.splice(lastWinner,1); lastWinner=-1;
+      rot=0; face.style.transform='rotate(0deg)'; draw();
+    }
+    spinning=true; btn.disabled=true; out.textContent=''; out.classList.remove('pop');
+
+    // Winner drawn before the animation, with the same cryptographic generator
+    // the main site uses. The spin reveals the result; it never decides it.
+    var pick;
+    if(window.crypto && window.crypto.getRandomValues){
+      var a=new Uint32Array(1);
+      // Rejection-sample so the modulo cannot skew the odds toward low indexes.
+      var limit=Math.floor(4294967296/n)*n;
+      do{ window.crypto.getRandomValues(a); }while(a[0]>=limit);
+      pick=a[0]%n;
+    } else { pick=Math.floor(Math.random()*n); }
+
+    var desired=norm(-(pick+0.5)*sweep);
+    var target=rot+norm(desired-norm(rot))+360*6;
+    var dur=reduce?0:DURATION, start=performance.now();
+    var lastEdge=Math.floor(rot/sweep);
+
+    function finish(){
+      rot=norm(target);
+      face.style.transform='rotate('+rot+'deg)';
+      spinning=false; btn.disabled=false;
+      out.textContent=entries[pick];
+      if(obs){ void out.offsetWidth; out.classList.add('pop'); }
+      lastWinner=pick;
+      try{
+        parent.postMessage({type:'pickerspin:result',winner:entries[pick],index:pick},'*');
+      }catch(e){}
+    }
+    if(!dur){ finish(); return; }
+
+    (function frame(now){
+      var t=Math.min(1,(now-start)/dur);
+      var at=rot+(target-rot)*EASE(t);
+      face.style.transform='rotate('+at+'deg)';
+      if(sound){ var edge=Math.floor(at/sweep); if(edge!==lastEdge){ lastEdge=edge; tick(); } }
+      if(t<1) requestAnimationFrame(frame); else finish();
+    })(start);
+  }
+
+  // Tell the host how tall we are, so a page can size the iframe to fit.
+  function reportHeight(){
+    try{
+      parent.postMessage({type:'pickerspin:height',
+        height:document.documentElement.scrollHeight},'*');
+    }catch(e){}
+  }
+  window.addEventListener('load',reportHeight);
+  window.addEventListener('resize',reportHeight);
+})();
+</script>
+</body>
+</html>
